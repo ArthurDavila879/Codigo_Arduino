@@ -5,13 +5,14 @@
 // =====================================================
 
 // ---------- L298N ----------
+// L298N
 const int IN1 = 2;
 const int IN2 = 3;
 const int IN3 = 4;
-const int IN4 = 5;
+const int IN4 = 7;
 
-const int ENA = 6;  // PWM - Motor esquerdo
-const int ENB = 7;  // PWM - Motor direito
+const int ENA = 5;  // PWM - Motor esquerdo
+const int ENB = 6;  // PWM - Motor direito
 
 // ---------- Ultrassônico esquerdo ----------
 const int TRIG_ESQ = 8;
