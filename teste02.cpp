@@ -56,6 +56,11 @@ const unsigned long INTERVALO_ULTRASSOM = 80;
 
 bool roboAtivo = false;
 
+// Variáveis para controle da fuga de borda sem delay
+unsigned long tempoInicioFuga = 0;
+int estadoFuga = 0;     // 0 = inativo, 1 = recuando, 2 = girando
+int direcaoFuga = 0;    // 1 = girar direita, 2 = girar esquerda
+
 float distanciaEsq = -1;
 float distanciaDir = -1;
 
@@ -111,7 +116,7 @@ void setup() {
   IrReceiver.begin(RECV_PIN, ENABLE_LED_FEEDBACK);
 
   Serial.println("=================================");
-  Serial.println("      MINI SUMO - V1");
+  Serial.println("      MINI SUMO - V2 (OTIMIZADO)");
   Serial.println("=================================");
   Serial.println("Aguardando comando...");
 }
@@ -122,33 +127,31 @@ void setup() {
 // =====================================================
 
 void loop() {
-
   verificarControle();
 
+  // Se o robô foi desligado no controle, garante que a fuga será cancelada
   if (!roboAtivo) {
     parar();
+    estadoFuga = 0; 
     return;
   }
 
   // --------------------------------
-  // 1. PRIORIDADE: BORDA
+  // 1. PRIORIDADE: GERENCIAR BORDA
   // --------------------------------
+  gerenciarFugaBorda();
 
-  if (detectarBorda()) {
-
-    evitarBorda();
-
-    return;
+  // Se o robô está no meio de uma manobra de fuga, ele IGNORA o resto do loop.
+  // Mas como não há "delay", ele continua lendo o controle remoto lá no começo!
+  if (estadoFuga > 0) {
+    return; 
   }
 
   // --------------------------------
   // 2. LER ULTRASSÔNICOS
   // --------------------------------
-
   if (millis() - ultimoUltrassom >= INTERVALO_ULTRASSOM) {
-
     ultimoUltrassom = millis();
-
     distanciaEsq = medirDistancia(TRIG_ESQ, ECHO_ESQ);
     distanciaDir = medirDistancia(TRIG_DIR, ECHO_DIR);
   }
@@ -156,7 +159,6 @@ void loop() {
   // --------------------------------
   // 3. DECIDIR MOVIMENTO
   // --------------------------------
-
   decidirMovimento();
 }
 
@@ -169,11 +171,11 @@ void verificarControle() {
 
   if (IrReceiver.decode()) {
 
-    unsigned long codigo =
-      IrReceiver.decodedIRData.decodedRawData;
+    unsigned long codigo = IrReceiver.decodedIRData.decodedRawData;
 
-    Serial.print("Codigo IR: 0x");
-    Serial.println(codigo, HEX);
+    // Apenas descomente as linhas abaixo se precisar descobrir o código de um botão novo
+    // Serial.print("Codigo IR: 0x");
+    // Serial.println(codigo, HEX);
 
     // Mesmo botão usado no código original
     if (codigo == 0x5DA2FF00) {
@@ -181,13 +183,9 @@ void verificarControle() {
       roboAtivo = !roboAtivo;
 
       if (roboAtivo) {
-
         Serial.println(">>> ROBO INICIADO <<<");
-
       } else {
-
         Serial.println(">>> ROBO PARADO <<<");
-
         parar();
       }
     }
@@ -198,93 +196,54 @@ void verificarControle() {
 
 
 // =====================================================
-// DETECÇÃO DA BORDA
+// NOVA LÓGICA DE FUGA DA BORDA (SEM DELAY)
 // =====================================================
 
-bool detectarBorda() {
-
-  int esquerda = digitalRead(IR_BORDA_ESQ);
-  int direita = digitalRead(IR_BORDA_DIR);
-
-  /*
-     ATENÇÃO:
-
-     Esta versão considera LOW como detecção
-     de borda.
-
-     Dependendo do módulo TCRT5000, pode ser
-     necessário inverter para HIGH.
-  */
-
-  bool bordaEsquerda = (esquerda == LOW);
-  bool bordaDireita = (direita == LOW);
-
-  return bordaEsquerda || bordaDireita;
-}
-
-
-// =====================================================
-// EVITAR BORDA
-// =====================================================
-
-void evitarBorda() {
-
-  int esquerda = digitalRead(IR_BORDA_ESQ);
-  int direita = digitalRead(IR_BORDA_DIR);
-
-  bool bordaEsquerda = (esquerda == LOW);
-  bool bordaDireita = (direita == LOW);
-
-  Serial.println("!!! BORDA DETECTADA !!!");
-
-  // --------------------------------
-  // Ambos detectaram borda
-  // --------------------------------
-
-  if (bordaEsquerda && bordaDireita) {
-
-    recuar();
-
-    delay(TEMPO_RECUO);
-
-    return;
+void gerenciarFugaBorda() {
+  // LÓGICA 1: O robô já está no meio de uma fuga?
+  if (estadoFuga > 0) {
+    
+    // Etapa 1: Está recuando
+    if (estadoFuga == 1) { 
+      if (millis() - tempoInicioFuga >= TEMPO_RECUO) {
+        estadoFuga = 2; // Acabou de recuar, vai girar
+        tempoInicioFuga = millis(); // Zera o cronômetro para o giro
+        
+        if (direcaoFuga == 1) girarDireita();
+        else girarEsquerda();
+      }
+    } 
+    // Etapa 2: Está girando
+    else if (estadoFuga == 2) { 
+      if (millis() - tempoInicioFuga >= TEMPO_GIRO) {
+        estadoFuga = 0; // Acabou a fuga! Robô livre.
+        parar();
+      }
+    }
+    return; // Sai da função para não ler os sensores de linha de novo.
   }
 
-  // --------------------------------
-  // Borda esquerda
-  // --------------------------------
+  // LÓGICA 2: O robô NÃO está fugindo, vamos ler a linha branca
+  bool bordaEsquerda = (digitalRead(IR_BORDA_ESQ) == LOW);
+  bool bordaDireita = (digitalRead(IR_BORDA_DIR) == LOW);
 
-  if (bordaEsquerda) {
-
+  if (bordaEsquerda || bordaDireita) {
+    Serial.println("!!! BORDA DETECTADA !!!");
+    
+    estadoFuga = 1; // Inicia a manobra (Recuo)
+    tempoInicioFuga = millis(); // Marca o tempo que começou
     recuar();
 
-    delay(TEMPO_RECUO);
-
-    girarDireita();
-
-    delay(TEMPO_GIRO);
-
-    return;
-  }
-
-  // --------------------------------
-  // Borda direita
-  // --------------------------------
-
-  if (bordaDireita) {
-
-    recuar();
-
-    delay(TEMPO_RECUO);
-
-    girarEsquerda();
-
-    delay(TEMPO_GIRO);
-
-    return;
+    // Decide para onde vai girar DEPOIS de recuar
+    if (bordaEsquerda && bordaDireita) {
+      direcaoFuga = 1; // Padrão: Gira pra direita se os dois pegarem
+    } else if (bordaEsquerda) {
+      direcaoFuga = 1; // Gira pra direita
+    } else if (bordaDireita) {
+      direcaoFuga = 2; // Gira pra esquerda
+    }
   }
 }
-
 
 // =====================================================
 // DECISÃO DO MOVIMENTO
@@ -292,100 +251,86 @@ void evitarBorda() {
 
 void decidirMovimento() {
 
-  bool encontrouEsquerda =
-    distanciaValida(distanciaEsq) &&
-    distanciaEsq <= DISTANCIA_ATAQUE;
-
-  bool encontrouDireita =
-    distanciaValida(distanciaDir) &&
-    distanciaDir <= DISTANCIA_ATAQUE;
-
+  bool encontrouEsquerda = distanciaValida(distanciaEsq) && distanciaEsq <= DISTANCIA_ATAQUE;
+  bool encontrouDireita = distanciaValida(distanciaDir) && distanciaDir <= DISTANCIA_ATAQUE;
 
   // --------------------------------
   // Adversário nos dois sensores
   // --------------------------------
-
   if (encontrouEsquerda && encontrouDireita) {
-
     Serial.println(">>> ADVERSARIO A FRENTE <<<");
-
     atacar();
-
     return;
   }
-
 
   // --------------------------------
   // Adversário à esquerda
   // --------------------------------
-
   if (encontrouEsquerda) {
-
     Serial.println(">>> ADVERSARIO ESQUERDA <<<");
-
     atacarEsquerda();
-
     return;
   }
-
 
   // --------------------------------
   // Adversário à direita
   // --------------------------------
-
   if (encontrouDireita) {
-
     Serial.println(">>> ADVERSARIO DIREITA <<<");
-
     atacarDireita();
-
     return;
   }
-
 
   // --------------------------------
   // Nenhum adversário
   // --------------------------------
-
   procurar();
 }
 
 
 // =====================================================
-// ULTRASSÔNICO
+// ULTRASSÔNICO (COM FILTRO ANTI-RUÍDO)
 // =====================================================
 
 float medirDistancia(int trig, int echo) {
-
-  // Dispara pulso
+  // --- PRIMEIRA LEITURA ---
   digitalWrite(trig, LOW);
   delayMicroseconds(2);
-
   digitalWrite(trig, HIGH);
   delayMicroseconds(10);
-
   digitalWrite(trig, LOW);
 
-  // Timeout de 25 ms
-  unsigned long tempo =
-    pulseIn(echo, HIGH, 25000);
+  unsigned long tempo1 = pulseIn(echo, HIGH, 25000);
+  if (tempo1 == 0) return -1;
 
-  // Nenhum retorno
-  if (tempo == 0) {
-    return -1;
+  float dist1 = (tempo1 * 0.000343) / 2.0;
+
+  // Se a primeira leitura diz que é hora de atacar, vamos confirmar!
+  if (dist1 > 0 && dist1 <= DISTANCIA_ATAQUE) {
+    delay(5); // Pausa curtinha (5ms) para dissipar o som antigo
+    
+    // --- SEGUNDA LEITURA (CONFIRMAÇÃO) ---
+    digitalWrite(trig, LOW);
+    delayMicroseconds(2);
+    digitalWrite(trig, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trig, LOW);
+    
+    unsigned long tempo2 = pulseIn(echo, HIGH, 25000);
+    float dist2 = (tempo2 * 0.000343) / 2.0;
+
+    // Se a diferença entre as duas leituras for menor que 10cm, é real!
+    if (abs(dist1 - dist2) < 0.10) {
+      return (dist1 + dist2) / 2.0; // Retorna a média
+    } else {
+      return -1; // Era um fantasma (ruído), ignorar.
+    }
   }
 
-  // Velocidade aproximada do som:
-  // 0,000343 m/us
-  float distancia =
-    (tempo * 0.000343) / 2.0;
-
-  return distancia;
+  return dist1; // Se for longe, retorna normal
 }
 
-
 bool distanciaValida(float distancia) {
-
   return distancia > 0;
 }
 
@@ -395,7 +340,6 @@ bool distanciaValida(float distancia) {
 // =====================================================
 
 void frente() {
-
   // Motor esquerdo
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
@@ -408,9 +352,7 @@ void frente() {
   analogWrite(ENB, VELOCIDADE_ATAQUE);
 }
 
-
 void atacar() {
-
   analogWrite(ENA, VELOCIDADE_ATAQUE);
   analogWrite(ENB, VELOCIDADE_ATAQUE);
 
@@ -421,9 +363,7 @@ void atacar() {
   digitalWrite(IN4, LOW);
 }
 
-
 void recuar() {
-
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
 
@@ -434,9 +374,7 @@ void recuar() {
   analogWrite(ENB, VELOCIDADE_RECUO);
 }
 
-
 void girarEsquerda() {
-
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
 
@@ -447,9 +385,7 @@ void girarEsquerda() {
   analogWrite(ENB, VELOCIDADE_GIRO);
 }
 
-
 void girarDireita() {
-
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
 
@@ -460,13 +396,11 @@ void girarDireita() {
   analogWrite(ENB, VELOCIDADE_GIRO);
 }
 
-
 // =====================================================
 // ATAQUE DIRECIONAL
 // =====================================================
 
 void atacarEsquerda() {
-
   analogWrite(ENA, VELOCIDADE_BUSCA);
   analogWrite(ENB, VELOCIDADE_ATAQUE);
 
@@ -477,9 +411,7 @@ void atacarEsquerda() {
   digitalWrite(IN4, LOW);
 }
 
-
 void atacarDireita() {
-
   analogWrite(ENA, VELOCIDADE_ATAQUE);
   analogWrite(ENB, VELOCIDADE_BUSCA);
 
@@ -490,18 +422,15 @@ void atacarDireita() {
   digitalWrite(IN4, LOW);
 }
 
-
 // =====================================================
 // PROCURAR ADVERSÁRIO
 // =====================================================
 
 void procurar() {
-
   /*
      Enquanto não encontra o adversário,
      o robô gira procurando.
   */
-
   analogWrite(ENA, VELOCIDADE_BUSCA);
   analogWrite(ENB, VELOCIDADE_BUSCA);
 
@@ -512,13 +441,11 @@ void procurar() {
   digitalWrite(IN4, HIGH);
 }
 
-
 // =====================================================
 // PARAR
 // =====================================================
 
 void parar() {
-
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
 
