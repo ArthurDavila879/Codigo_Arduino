@@ -51,19 +51,21 @@ const unsigned long INTERVALO_ULTRASSOM = 80;
 
 
 // =====================================================
-// VARIÁVEIS
+// VARIÁVEIS DE ESTADO
 // =====================================================
 
-bool roboAtivo = false;
+// Máquina de estados da partida (Regras Oficiais RoboCore)
+// 0 = Aguardando, 1 = Ready (Tecla A), 2 = Start (Tecla B), 3 = Stop Permanente (Tecla C)
+int estadoPartida = 0; 
 
 // Variáveis para controle da fuga de borda sem delay
 unsigned long tempoInicioFuga = 0;
 int estadoFuga = 0;     // 0 = inativo, 1 = recuando, 2 = girando
 int direcaoFuga = 0;    // 1 = girar direita, 2 = girar esquerda
 
+// Variáveis dos ultrassônicos
 float distanciaEsq = -1;
 float distanciaDir = -1;
-
 unsigned long ultimoUltrassom = 0;
 
 
@@ -72,13 +74,11 @@ unsigned long ultimoUltrassom = 0;
 // =====================================================
 
 void setup() {
-
   Serial.begin(9600);
 
   // -----------------------------
   // Motores
   // -----------------------------
-
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
   pinMode(IN3, OUTPUT);
@@ -92,7 +92,6 @@ void setup() {
   // -----------------------------
   // Ultrassônicos
   // -----------------------------
-
   pinMode(TRIG_ESQ, OUTPUT);
   pinMode(ECHO_ESQ, INPUT);
 
@@ -105,20 +104,18 @@ void setup() {
   // -----------------------------
   // Sensores de borda
   // -----------------------------
-
   pinMode(IR_BORDA_ESQ, INPUT);
   pinMode(IR_BORDA_DIR, INPUT);
 
   // -----------------------------
   // Receptor IR
   // -----------------------------
-
   IrReceiver.begin(RECV_PIN, ENABLE_LED_FEEDBACK);
 
   Serial.println("=================================");
-  Serial.println("      MINI SUMO - V2 (OTIMIZADO)");
+  Serial.println(" MINI SUMO - V3 (REGRAS 2026) ");
   Serial.println("=================================");
-  Serial.println("Aguardando comando...");
+  Serial.println("Aguardando comando READY (Tecla A)...");
 }
 
 
@@ -127,28 +124,28 @@ void setup() {
 // =====================================================
 
 void loop() {
+  // 1. Sempre escuta o controle remoto
   verificarControle();
 
-  // Se o robô foi desligado no controle, garante que a fuga será cancelada
-  if (!roboAtivo) {
+  // Se o robô NÃO estiver em estado de START (lutando), ele não faz nada
+  if (estadoPartida != 2) {
     parar();
-    estadoFuga = 0; 
+    estadoFuga = 0; // Cancela qualquer fuga em andamento se o juiz parar a luta
     return;
   }
 
   // --------------------------------
-  // 1. PRIORIDADE: GERENCIAR BORDA
+  // 2. PRIORIDADE MAX: GERENCIAR BORDA
   // --------------------------------
   gerenciarFugaBorda();
 
   // Se o robô está no meio de uma manobra de fuga, ele IGNORA o resto do loop.
-  // Mas como não há "delay", ele continua lendo o controle remoto lá no começo!
   if (estadoFuga > 0) {
     return; 
   }
 
   // --------------------------------
-  // 2. LER ULTRASSÔNICOS
+  // 3. LER ULTRASSÔNICOS
   // --------------------------------
   if (millis() - ultimoUltrassom >= INTERVALO_ULTRASSOM) {
     ultimoUltrassom = millis();
@@ -157,40 +154,55 @@ void loop() {
   }
 
   // --------------------------------
-  // 3. DECIDIR MOVIMENTO
+  // 4. DECIDIR MOVIMENTO
   // --------------------------------
   decidirMovimento();
 }
 
 
 // =====================================================
-// CONTROLE REMOTO
+// CONTROLE REMOTO (PADRÃO ROBOCORE / REGRAS 2026)
 // =====================================================
 
 void verificarControle() {
-
   if (IrReceiver.decode()) {
-
     unsigned long codigo = IrReceiver.decodedIRData.decodedRawData;
+    IrReceiver.resume(); // Libera para o próximo sinal
 
-    // Apenas descomente as linhas abaixo se precisar descobrir o código de um botão novo
-    // Serial.print("Codigo IR: 0x");
-    // Serial.println(codigo, HEX);
-
-    // Mesmo botão usado no código original
-    if (codigo == 0x5DA2FF00) {
-
-      roboAtivo = !roboAtivo;
-
-      if (roboAtivo) {
-        Serial.println(">>> ROBO INICIADO <<<");
-      } else {
-        Serial.println(">>> ROBO PARADO <<<");
-        parar();
-      }
+    // -----------------------------------------
+    // REGRA 1: TECLA C (STOP) - 0xA15EFF00
+    // O robô deve parar de forma permanente.
+    // -----------------------------------------
+    if (codigo == 0xA15EFF00) {
+      estadoPartida = 3; // Stop Permanente
+      Serial.println(">>> ESTADO: STOP (PARADA PERMANENTE) <<<");
+      parar();
+      return;
     }
 
-    IrReceiver.resume();
+    // Se estiver em Stop Permanente, ignora os outros botões (exige reset físico)
+    if (estadoPartida == 3) {
+      return; 
+    }
+
+    // -----------------------------------------
+    // REGRA 2: TECLA A (READY) - 0xF30CFF00
+    // O robô fica pronto e imóvel aguardando.
+    // -----------------------------------------
+    if (codigo == 0xF30CFF00) {
+      estadoPartida = 1; // Ready
+      Serial.println(">>> ESTADO: READY (PRONTO PARA LUTAR) <<<");
+      parar();
+    }
+    
+    // -----------------------------------------
+    // REGRA 3: TECLA B (START) - 0xE718FF00
+    // Inicia a luta (só funciona se estiver Ready)
+    // -----------------------------------------
+    else if (codigo == 0xE718FF00 && estadoPartida == 1) {
+      estadoPartida = 2; // Start
+      Serial.println(">>> ESTADO: START (LUTA INICIADA!) <<<");
+    }
   }
 }
 
@@ -245,12 +257,12 @@ void gerenciarFugaBorda() {
   }
 }
 
+
 // =====================================================
 // DECISÃO DO MOVIMENTO
 // =====================================================
 
 void decidirMovimento() {
-
   bool encontrouEsquerda = distanciaValida(distanciaEsq) && distanciaEsq <= DISTANCIA_ATAQUE;
   bool encontrouDireita = distanciaValida(distanciaDir) && distanciaDir <= DISTANCIA_ATAQUE;
 
@@ -258,7 +270,6 @@ void decidirMovimento() {
   // Adversário nos dois sensores
   // --------------------------------
   if (encontrouEsquerda && encontrouDireita) {
-    Serial.println(">>> ADVERSARIO A FRENTE <<<");
     atacar();
     return;
   }
@@ -267,7 +278,6 @@ void decidirMovimento() {
   // Adversário à esquerda
   // --------------------------------
   if (encontrouEsquerda) {
-    Serial.println(">>> ADVERSARIO ESQUERDA <<<");
     atacarEsquerda();
     return;
   }
@@ -276,7 +286,6 @@ void decidirMovimento() {
   // Adversário à direita
   // --------------------------------
   if (encontrouDireita) {
-    Serial.println(">>> ADVERSARIO DIREITA <<<");
     atacarDireita();
     return;
   }
@@ -340,14 +349,10 @@ bool distanciaValida(float distancia) {
 // =====================================================
 
 void frente() {
-  // Motor esquerdo
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
-
-  // Motor direito
   digitalWrite(IN3, HIGH);
   digitalWrite(IN4, LOW);
-
   analogWrite(ENA, VELOCIDADE_ATAQUE);
   analogWrite(ENB, VELOCIDADE_ATAQUE);
 }
@@ -355,10 +360,8 @@ void frente() {
 void atacar() {
   analogWrite(ENA, VELOCIDADE_ATAQUE);
   analogWrite(ENB, VELOCIDADE_ATAQUE);
-
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
-
   digitalWrite(IN3, HIGH);
   digitalWrite(IN4, LOW);
 }
@@ -366,10 +369,8 @@ void atacar() {
 void recuar() {
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
-
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, HIGH);
-
   analogWrite(ENA, VELOCIDADE_RECUO);
   analogWrite(ENB, VELOCIDADE_RECUO);
 }
@@ -377,10 +378,8 @@ void recuar() {
 void girarEsquerda() {
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
-
   digitalWrite(IN3, HIGH);
   digitalWrite(IN4, LOW);
-
   analogWrite(ENA, VELOCIDADE_GIRO);
   analogWrite(ENB, VELOCIDADE_GIRO);
 }
@@ -388,10 +387,8 @@ void girarEsquerda() {
 void girarDireita() {
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
-
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, HIGH);
-
   analogWrite(ENA, VELOCIDADE_GIRO);
   analogWrite(ENB, VELOCIDADE_GIRO);
 }
@@ -403,10 +400,8 @@ void girarDireita() {
 void atacarEsquerda() {
   analogWrite(ENA, VELOCIDADE_BUSCA);
   analogWrite(ENB, VELOCIDADE_ATAQUE);
-
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
-
   digitalWrite(IN3, HIGH);
   digitalWrite(IN4, LOW);
 }
@@ -414,10 +409,8 @@ void atacarEsquerda() {
 void atacarDireita() {
   analogWrite(ENA, VELOCIDADE_ATAQUE);
   analogWrite(ENB, VELOCIDADE_BUSCA);
-
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
-
   digitalWrite(IN3, HIGH);
   digitalWrite(IN4, LOW);
 }
@@ -427,16 +420,10 @@ void atacarDireita() {
 // =====================================================
 
 void procurar() {
-  /*
-     Enquanto não encontra o adversário,
-     o robô gira procurando.
-  */
   analogWrite(ENA, VELOCIDADE_BUSCA);
   analogWrite(ENB, VELOCIDADE_BUSCA);
-
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
-
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, HIGH);
 }
@@ -448,10 +435,8 @@ void procurar() {
 void parar() {
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
-
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, LOW);
-
   analogWrite(ENA, 0);
   analogWrite(ENB, 0);
 }
