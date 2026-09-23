@@ -1,31 +1,76 @@
-
 #include <IRremote.hpp>
+
+// =====================================================
+// MINI SUMO - INOVAWEEK 2026
+// =====================================================
+//
+// PRIORIDADES:
+//
+// 1. STOP / READY / START
+// 2. BORDA
+// 3. ADVERSARIO
+// 4. BUSCA
+//
+// =====================================================
+
+
+// =====================================================
+// DEBUG
+// =====================================================
+//
+// true  = mostra sensores no Serial
+// false = recomendado para competição
+//
+
+const bool DEBUG_SERIAL = true;
+
 
 // =====================================================
 // PINOS
 // =====================================================
 
+// ----------------------
 // L298N
+// ----------------------
+
 const uint8_t IN1 = 2;
 const uint8_t IN2 = 3;
+
 const uint8_t IN3 = 4;
 const uint8_t IN4 = 12;
 
-const uint8_t ENA = 5;
-const uint8_t ENB = 6;
+const uint8_t ENA = 5;   // PWM motor esquerdo
+const uint8_t ENB = 6;   // PWM motor direito
 
-// HC-SR04
+
+// ----------------------
+// HC-SR04 ESQUERDO
+// ----------------------
+
 const uint8_t TRIG_ESQ = 8;
 const uint8_t ECHO_ESQ = 9;
+
+
+// ----------------------
+// HC-SR04 DIREITO
+// ----------------------
 
 const uint8_t TRIG_DIR = 10;
 const uint8_t ECHO_DIR = 11;
 
+
+// ----------------------
 // TCRT5000
+// ----------------------
+
 const uint8_t IR_BORDA_ESQ = A2;
 const uint8_t IR_BORDA_DIR = A1;
 
+
+// ----------------------
 // Receptor IR
+// ----------------------
+
 const uint8_t RECV_PIN = A0;
 
 
@@ -43,10 +88,12 @@ const uint32_t CODIGO_STOP  = 3960732420UL;
 // =====================================================
 
 enum EstadoPartida : uint8_t {
+
   AGUARDANDO,
   READY,
   START,
   STOP_PERMANENTE
+
 };
 
 EstadoPartida estadoPartida = AGUARDANDO;
@@ -56,64 +103,144 @@ EstadoPartida estadoPartida = AGUARDANDO;
 // VELOCIDADES
 // =====================================================
 
+// Ataque frontal máximo
 const uint8_t VELOCIDADE_ATAQUE = 255;
-const uint8_t VELOCIDADE_BUSCA  = 170;
-const uint8_t VELOCIDADE_RECUO  = 200;
-const uint8_t VELOCIDADE_GIRO   = 200;
+
+// Ataque quando somente um sensor vê o adversário
+const uint8_t VELOCIDADE_CURVA_ATAQUE = 190;
+
+// Busca propositalmente mais lenta.
+// Antes estava 170.
+const uint8_t VELOCIDADE_BUSCA = 110;
+
+// Recuo ao detectar borda
+const uint8_t VELOCIDADE_RECUO = 200;
+
+// Giro depois de recuar da borda
+const uint8_t VELOCIDADE_GIRO = 180;
 
 
 // =====================================================
-// CONFIGURAÇÕES DOS SENSORES
+// CONFIGURAÇÃO DOS ULTRASSÔNICOS
 // =====================================================
 
-// Metros
-const float DISTANCIA_ATAQUE_MINIMA = 0.02f;
+// HC-SR04 possui região muito próxima pouco confiável.
+// 4 cm evita falsos alvos extremamente próximos.
+const float DISTANCIA_ATAQUE_MINIMA = 0.04f;
+
+// 80 cm
 const float DISTANCIA_ATAQUE_MAXIMA = 0.80f;
 
-// IMPORTANTE:
-// Esse valor ainda precisa ser calibrado no robô real.
-const int LIMIAR_BORDA = 450;
 
-// Atualmente:
-// valor > 450 = borda.
+// -----------------------------------------------------
+// Os sensores NÃO são mais disparados juntos.
 //
-// Se no Serial você descobrir que BRANCO gera valor MENOR,
-// troque ">" por "<" na função lerBorda().
+// ESQ
+// 30 ms
+// DIR
+// 30 ms
+// ESQ
+//
+// Portanto cada HC-SR04 individualmente recebe
+// aproximadamente 60 ms entre disparos.
+// -----------------------------------------------------
+
+const unsigned long INTERVALO_PING_MS = 30;
 
 
-// =====================================================
-// TEMPOS
-// =====================================================
+// Se uma leitura tiver mais que isso, ela deixa
+// de ser considerada válida.
+const unsigned long VALIDADE_LEITURA_MS = 150;
 
-const unsigned long TEMPO_RECUO = 250;
-const unsigned long TEMPO_GIRO = 300;
 
-const unsigned long INTERVALO_ULTRASSOM = 80;
+// Mantém a direção do último adversário visto por
+// alguns milissegundos caso um eco seja perdido.
+const unsigned long MEMORIA_ALVO_MS = 120;
 
-// 7 ms é suficiente para a região que estamos utilizando.
+
+// Timeout do pulseIn.
+//
+// 80 cm precisam de aproximadamente 4,7 ms.
+// 7 ms dá uma boa margem.
 const unsigned long TIMEOUT_ULTRASSOM_US = 7000;
 
 
 // =====================================================
-// FUGA DA BORDA
+// CONFIGURAÇÃO DA BORDA
+// =====================================================
+
+const int LIMIAR_BORDA = 450;
+
+
+// true:
+//
+// valor > 450 = BORDA
+//
+// Como você relatou que a borda já está funcionando,
+// mantive essa lógica.
+//
+// Se algum dia ficar invertido:
+//
+// true -> false
+//
+
+const bool BORDA_QUANDO_VALOR_MAIOR = true;
+
+
+// =====================================================
+// TEMPOS DA FUGA
+// =====================================================
+
+const unsigned long TEMPO_RECUO_MS = 250;
+const unsigned long TEMPO_GIRO_MS  = 300;
+
+
+// =====================================================
+// ESTADO DA FUGA
 // =====================================================
 
 enum EstadoFuga : uint8_t {
+
   FUGA_INATIVA,
   FUGA_RECUANDO,
   FUGA_GIRANDO
+
 };
 
+
 enum DirecaoFuga : uint8_t {
+
   SEM_DIRECAO,
   FUGA_DIREITA,
   FUGA_ESQUERDA
+
 };
 
+
 EstadoFuga estadoFuga = FUGA_INATIVA;
+
 DirecaoFuga direcaoFuga = SEM_DIRECAO;
 
-unsigned long tempoInicioFuga = 0;
+unsigned long inicioFuga = 0;
+
+
+// =====================================================
+// DIREÇÃO DO ÚLTIMO ADVERSÁRIO
+// =====================================================
+
+enum DirecaoAlvo : uint8_t {
+
+  ALVO_NENHUM,
+  ALVO_ESQUERDA,
+  ALVO_DIREITA,
+  ALVO_CENTRO
+
+};
+
+
+DirecaoAlvo ultimaDirecaoAlvo = ALVO_NENHUM;
+
+unsigned long ultimoAlvoVisto = 0;
 
 
 // =====================================================
@@ -123,7 +250,16 @@ unsigned long tempoInicioFuga = 0;
 float distanciaEsq = -1.0f;
 float distanciaDir = -1.0f;
 
-unsigned long ultimoUltrassom = 0;
+
+// Momento em que cada leitura foi feita.
+unsigned long tempoDistanciaEsq = 0;
+unsigned long tempoDistanciaDir = 0;
+
+
+// Controle da alternância dos HC-SR04.
+bool proximoUltrassomEsquerdo = true;
+
+unsigned long ultimoPingUltrassom = 0;
 
 
 // =====================================================
@@ -141,12 +277,14 @@ void setup() {
 
   Serial.begin(9600);
 
-  // ---------------------------
-  // Motores
-  // ---------------------------
+
+  // ===================================================
+  // MOTORES
+  // ===================================================
 
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
+
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
 
@@ -156,9 +294,9 @@ void setup() {
   parar();
 
 
-  // ---------------------------
-  // Ultrassônicos
-  // ---------------------------
+  // ===================================================
+  // ULTRASSÔNICOS
+  // ===================================================
 
   pinMode(TRIG_ESQ, OUTPUT);
   pinMode(ECHO_ESQ, INPUT);
@@ -170,27 +308,34 @@ void setup() {
   digitalWrite(TRIG_DIR, LOW);
 
 
-  // ---------------------------
-  // Sensores de borda
-  // ---------------------------
+  // ===================================================
+  // TCRT5000
+  // ===================================================
 
   pinMode(IR_BORDA_ESQ, INPUT);
   pinMode(IR_BORDA_DIR, INPUT);
 
 
-  // ---------------------------
-  // Controle IR
-  // ---------------------------
+  // ===================================================
+  // RECEPTOR IR
+  // ===================================================
 
-  IrReceiver.begin(RECV_PIN, ENABLE_LED_FEEDBACK);
+  IrReceiver.begin(
+    RECV_PIN,
+    ENABLE_LED_FEEDBACK
+  );
 
 
-  Serial.println();
-  Serial.println(F("=============================="));
-  Serial.println(F(" MINI SUMO - INOVAWEEK 2026"));
-  Serial.println(F("=============================="));
-  Serial.println(F("Estado: AGUARDANDO"));
-  Serial.println(F("Aguardando READY..."));
+  if (DEBUG_SERIAL) {
+
+    Serial.println();
+    Serial.println(F("==============================="));
+    Serial.println(F(" MINI SUMO - INOVAWEEK 2026"));
+    Serial.println(F("==============================="));
+
+    Serial.println(F("Estado: AGUARDANDO"));
+    Serial.println(F("Aguardando READY..."));
+  }
 }
 
 
@@ -201,21 +346,22 @@ void setup() {
 void loop() {
 
   // ===================================================
-  // 1 - CONTROLE DO JUIZ
+  // PRIORIDADE 1
+  // CONTROLE DO JUIZ
   // ===================================================
 
   verificarControle();
 
 
   // ===================================================
-  // 2 - DEBUG DOS SENSORES
+  // DEBUG
   // ===================================================
 
   debugSensores();
 
 
   // ===================================================
-  // 3 - STOP PERMANENTE
+  // STOP PERMANENTE
   // ===================================================
 
   if (estadoPartida == STOP_PERMANENTE) {
@@ -227,7 +373,7 @@ void loop() {
 
 
   // ===================================================
-  // 4 - AGUARDANDO / READY
+  // READY / AGUARDANDO
   // ===================================================
 
   if (estadoPartida != START) {
@@ -242,25 +388,31 @@ void loop() {
 
 
   // ===================================================
-  // 5 - BORDA
+  // PRIORIDADE 2
+  // BORDA
   // ===================================================
 
-  gerenciarFugaBorda();
+  //
+  // Se a função retornar true,
+  // este ciclo do loop pertence exclusivamente
+  // à fuga da borda.
+  //
 
+  if (gerenciarFugaBorda()) {
 
-  if (estadoFuga != FUGA_INATIVA) {
     return;
   }
 
 
   // ===================================================
-  // 6 - ULTRASSÔNICOS
+  // PRIORIDADE 3
+  // ULTRASSÔNICOS
   // ===================================================
 
   atualizarUltrassonicos();
 
 
-  // Verifica novamente o controle.
+  // Um comando pode ter chegado durante pulseIn().
   verificarControle();
 
 
@@ -273,7 +425,7 @@ void loop() {
 
 
   // ===================================================
-  // 7 - DECISÃO
+  // DECISÃO
   // ===================================================
 
   decidirMovimento();
@@ -287,6 +439,7 @@ void loop() {
 void verificarControle() {
 
   if (!IrReceiver.decode()) {
+
     return;
   }
 
@@ -298,8 +451,11 @@ void verificarControle() {
   IrReceiver.resume();
 
 
-  Serial.print(F("IR RAW: 0x"));
-  Serial.println(codigo, HEX);
+  if (DEBUG_SERIAL) {
+
+    Serial.print(F("IR RAW: 0x"));
+    Serial.println(codigo, HEX);
+  }
 
 
   // ===================================================
@@ -313,17 +469,25 @@ void verificarControle() {
     estadoFuga = FUGA_INATIVA;
     direcaoFuga = SEM_DIRECAO;
 
+    limparAlvo();
+
     parar();
 
-    Serial.println(F(""));
-    Serial.println(F(">>> STOP PERMANENTE <<<"));
-    Serial.println(F("Reinicie fisicamente o robo."));
+
+    if (DEBUG_SERIAL) {
+
+      Serial.println();
+      Serial.println(F(">>> STOP PERMANENTE <<<"));
+      Serial.println(F("Reinicie fisicamente o robo."));
+    }
 
     return;
   }
 
 
-  // Depois de STOP nada funciona.
+  // Depois de STOP absolutamente nada
+  // pode reativar o robô.
+
   if (estadoPartida == STOP_PERMANENTE) {
 
     parar();
@@ -343,11 +507,17 @@ void verificarControle() {
     estadoFuga = FUGA_INATIVA;
     direcaoFuga = SEM_DIRECAO;
 
+    limparAlvo();
+
     parar();
 
-    Serial.println(F(""));
-    Serial.println(F(">>> READY <<<"));
-    Serial.println(F("Robo parado."));
+
+    if (DEBUG_SERIAL) {
+
+      Serial.println();
+      Serial.println(F(">>> READY <<<"));
+      Serial.println(F("Robo parado."));
+    }
 
     return;
   }
@@ -359,20 +529,34 @@ void verificarControle() {
 
   if (codigo == CODIGO_START) {
 
-    // START somente inicia se estiver READY.
     //
-    // Se receber START novamente enquanto já está
-    // lutando, nada acontece.
+    // Só sai do READY para START.
+    //
+    // START recebido durante START não faz nada.
+    //
 
     if (estadoPartida == READY) {
 
       estadoPartida = START;
 
-      ultimoUltrassom = 0;
+      estadoFuga = FUGA_INATIVA;
+      direcaoFuga = SEM_DIRECAO;
 
-      Serial.println(F(""));
-      Serial.println(F(">>> START <<<"));
-      Serial.println(F("Luta iniciada."));
+      limparAlvo();
+
+
+      // Faz o primeiro HC-SR04 ser lido rapidamente.
+      ultimoPingUltrassom = 0;
+
+      proximoUltrassomEsquerdo = true;
+
+
+      if (DEBUG_SERIAL) {
+
+        Serial.println();
+        Serial.println(F(">>> START <<<"));
+        Serial.println(F("Luta iniciada."));
+      }
     }
 
     return;
@@ -381,90 +565,100 @@ void verificarControle() {
 
 
 // =====================================================
-// DEBUG DOS SENSORES
+// LIMPAR ALVO
 // =====================================================
 
-void debugSensores() {
+void limparAlvo() {
 
-  if (millis() - ultimoDebug < 300) {
-    return;
-  }
+  distanciaEsq = -1.0f;
+  distanciaDir = -1.0f;
 
-  ultimoDebug = millis();
+  tempoDistanciaEsq = 0;
+  tempoDistanciaDir = 0;
 
-
-  int tcrtEsq = analogRead(IR_BORDA_ESQ);
-  int tcrtDir = analogRead(IR_BORDA_DIR);
-
-
-  Serial.print(F("TCRT E: "));
-  Serial.print(tcrtEsq);
-
-  Serial.print(F(" | TCRT D: "));
-  Serial.print(tcrtDir);
-
-  Serial.print(F(" | ULTRA E: "));
-
-  if (distanciaEsq < 0) {
-
-    Serial.print(F("SEM ECO"));
-
-  } else {
-
-    Serial.print(distanciaEsq * 100.0f, 1);
-    Serial.print(F("cm"));
-  }
-
-
-  Serial.print(F(" | ULTRA D: "));
-
-  if (distanciaDir < 0) {
-
-    Serial.print(F("SEM ECO"));
-
-  } else {
-
-    Serial.print(distanciaDir * 100.0f, 1);
-    Serial.print(F("cm"));
-  }
-
-
-  Serial.println();
+  ultimaDirecaoAlvo = ALVO_NENHUM;
+  ultimoAlvoVisto = 0;
 }
 
 
 // =====================================================
-// LEITURA DA BORDA
+// LEITURA ANALÓGICA MAIS ESTÁVEL
 // =====================================================
+//
+// O Arduino troca o canal do ADC entre A1 e A2.
+//
+// Descartamos uma primeira leitura e usamos
+// a segunda para reduzir efeito da troca de canal.
+//
 
-bool lerBorda(uint8_t pino) {
+int analogReadEstavel(uint8_t pino) {
 
-  int valor = analogRead(pino);
+  analogRead(pino);
 
-
-  // ===================================================
-  // IMPORTANTE
-  //
-  // Neste momento estamos supondo:
-  //
-  // PRETO  = valor baixo
-  // BRANCO = valor alto
-  //
-  // Se os testes mostrarem o contrário:
-  //
-  // return valor < LIMIAR_BORDA;
-  //
-  // ===================================================
-
-  return valor > LIMIAR_BORDA;
+  return analogRead(pino);
 }
 
 
 // =====================================================
-// GERENCIAMENTO DA FUGA
+// VALOR É BORDA?
 // =====================================================
 
-void gerenciarFugaBorda() {
+bool valorIndicaBorda(int valor) {
+
+  if (BORDA_QUANDO_VALOR_MAIOR) {
+
+    return valor > LIMIAR_BORDA;
+  }
+
+  return valor < LIMIAR_BORDA;
+}
+
+
+// =====================================================
+// LEITURA CONFIRMADA DA BORDA
+// =====================================================
+//
+// Exige duas leituras indicando borda.
+//
+// Isso reduz falsos disparos produzidos por:
+//
+// - ruído dos motores
+// - vibração
+// - valor próximo do limiar
+//
+
+bool lerBordaConfirmada(uint8_t pino) {
+
+  int leitura1 = analogReadEstavel(pino);
+
+
+  if (!valorIndicaBorda(leitura1)) {
+
+    return false;
+  }
+
+
+  delayMicroseconds(400);
+
+
+  int leitura2 = analogReadEstavel(pino);
+
+
+  return valorIndicaBorda(leitura2);
+}
+
+
+// =====================================================
+// GERENCIAR FUGA
+// =====================================================
+//
+// Retorna:
+//
+// true  = fuga ocupou este loop
+// false = pode continuar para ultrassônicos
+//
+
+bool gerenciarFugaBorda() {
 
   verificarControle();
 
@@ -475,7 +669,7 @@ void gerenciarFugaBorda() {
 
     estadoFuga = FUGA_INATIVA;
 
-    return;
+    return true;
   }
 
 
@@ -485,11 +679,13 @@ void gerenciarFugaBorda() {
 
   if (estadoFuga == FUGA_RECUANDO) {
 
-    if (millis() - tempoInicioFuga >= TEMPO_RECUO) {
+    if (
+      millis() - inicioFuga >= TEMPO_RECUO_MS
+    ) {
 
       estadoFuga = FUGA_GIRANDO;
 
-      tempoInicioFuga = millis();
+      inicioFuga = millis();
 
 
       if (direcaoFuga == FUGA_DIREITA) {
@@ -502,7 +698,8 @@ void gerenciarFugaBorda() {
       }
     }
 
-    return;
+
+    return true;
   }
 
 
@@ -512,133 +709,219 @@ void gerenciarFugaBorda() {
 
   if (estadoFuga == FUGA_GIRANDO) {
 
-    if (millis() - tempoInicioFuga >= TEMPO_GIRO) {
+    if (
+      millis() - inicioFuga >= TEMPO_GIRO_MS
+    ) {
 
       estadoFuga = FUGA_INATIVA;
 
       direcaoFuga = SEM_DIRECAO;
 
-      parar();
+
+      // Não queremos atacar usando uma leitura
+      // ultrassônica feita antes da fuga.
+      limparAlvo();
+
+
+      //
+      // IMPORTANTE:
+      //
+      // NÃO chamamos parar() aqui.
+      //
+      // Retornamos e, no próximo loop,
+      // a borda será verificada novamente.
+      //
     }
 
-    return;
+
+    return true;
   }
 
 
   // ===================================================
-  // VERIFICAÇÃO DA BORDA
+  // VERIFICAR BORDA
   // ===================================================
 
   bool bordaEsquerda =
-    lerBorda(IR_BORDA_ESQ);
+    lerBordaConfirmada(IR_BORDA_ESQ);
+
 
   bool bordaDireita =
-    lerBorda(IR_BORDA_DIR);
+    lerBordaConfirmada(IR_BORDA_DIR);
 
 
   // Nenhuma borda.
-  if (!bordaEsquerda && !bordaDireita) {
-    return;
+  if (
+    !bordaEsquerda &&
+    !bordaDireita
+  ) {
+
+    return false;
   }
 
 
-  Serial.print(F(">>> BORDA: "));
+  // Ao entrar em fuga,
+  // invalida qualquer adversário antigo.
+
+  limparAlvo();
+
+
+  if (DEBUG_SERIAL) {
+
+    Serial.print(F(">>> BORDA: "));
+  }
 
 
   // ===================================================
-  // AMBOS
+  // DOIS SENSORES
   // ===================================================
 
-  if (bordaEsquerda && bordaDireita) {
+  if (
+    bordaEsquerda &&
+    bordaDireita
+  ) {
 
-    Serial.println(F("AMBOS"));
+    if (DEBUG_SERIAL) {
+
+      Serial.println(F("AMBOS"));
+    }
+
+
+    //
+    // Se os dois detectarem,
+    // recua e escolhe direita como padrão.
+    //
 
     direcaoFuga = FUGA_DIREITA;
   }
 
 
   // ===================================================
-  // ESQUERDA
+  // BORDA ESQUERDA
   // ===================================================
 
   else if (bordaEsquerda) {
 
-    Serial.println(F("ESQUERDA"));
+    if (DEBUG_SERIAL) {
 
-    // Borda esquerda:
-    // recua e vira para direita.
+      Serial.println(F("ESQUERDA"));
+    }
+
+
+    //
+    // Borda na esquerda:
+    // gira para direita.
+    //
 
     direcaoFuga = FUGA_DIREITA;
   }
 
 
   // ===================================================
-  // DIREITA
+  // BORDA DIREITA
   // ===================================================
 
   else {
 
-    Serial.println(F("DIREITA"));
+    if (DEBUG_SERIAL) {
 
+      Serial.println(F("DIREITA"));
+    }
+
+
+    //
     // Borda direita:
-    // recua e vira para esquerda.
+    // gira para esquerda.
+    //
 
     direcaoFuga = FUGA_ESQUERDA;
   }
 
 
-  // Começa fuga.
+  // ===================================================
+  // COMEÇAR RECUO
+  // ===================================================
+
   estadoFuga = FUGA_RECUANDO;
 
-  tempoInicioFuga = millis();
+  inicioFuga = millis();
 
   recuar();
+
+
+  return true;
 }
 
 
 // =====================================================
-// ATUALIZAÇÃO DOS ULTRASSÔNICOS
+// ATUALIZAR ULTRASSÔNICOS
 // =====================================================
+//
+// NOVA ESTRATÉGIA:
+//
+// T = 0ms    esquerdo
+// T = 30ms   direito
+// T = 60ms   esquerdo
+// T = 90ms   direito
+//
+// Isso reduz interferência entre os HC-SR04.
+//
 
 void atualizarUltrassonicos() {
 
-  if (millis() - ultimoUltrassom <
-      INTERVALO_ULTRASSOM) {
+  unsigned long agora = millis();
+
+
+  if (
+    agora - ultimoPingUltrassom <
+    INTERVALO_PING_MS
+  ) {
 
     return;
   }
 
 
-  ultimoUltrassom = millis();
+  ultimoPingUltrassom = agora;
 
 
   // ===================================================
   // ESQUERDO
   // ===================================================
 
-  distanciaEsq =
-    medirDistancia(TRIG_ESQ, ECHO_ESQ);
+  if (proximoUltrassomEsquerdo) {
+
+    distanciaEsq =
+      medirDistancia(
+        TRIG_ESQ,
+        ECHO_ESQ
+      );
 
 
-  verificarControle();
+    tempoDistanciaEsq = millis();
 
 
-  if (estadoPartida != START) {
-    return;
+    proximoUltrassomEsquerdo = false;
   }
-
-
-  // Pequeno intervalo entre sensores para reduzir
-  // interferência acústica entre os dois HC-SR04.
-  delayMicroseconds(3000);
 
 
   // ===================================================
   // DIREITO
   // ===================================================
 
-  distanciaDir =
-    medirDistancia(TRIG_DIR, ECHO_DIR);
+  else {
+
+    distanciaDir =
+      medirDistancia(
+        TRIG_DIR,
+        ECHO_DIR
+      );
+
+
+    tempoDistanciaDir = millis();
+
+
+    proximoUltrassomEsquerdo = true;
+  }
 }
 
 
@@ -651,10 +934,14 @@ float medirDistancia(
   uint8_t echo
 ) {
 
+  // Garante TRIG LOW antes do pulso.
+
   digitalWrite(trig, LOW);
 
   delayMicroseconds(2);
 
+
+  // Pulso de 10 us.
 
   digitalWrite(trig, HIGH);
 
@@ -662,6 +949,8 @@ float medirDistancia(
 
   digitalWrite(trig, LOW);
 
+
+  // Aguarda ECHO.
 
   unsigned long tempo =
     pulseIn(
@@ -671,21 +960,18 @@ float medirDistancia(
     );
 
 
-  // Nenhum eco.
+  // ===================================================
+  // SEM ECO
+  // ===================================================
+
   if (tempo == 0) {
+
     return -1.0f;
   }
 
 
   // ===================================================
   // DISTÂNCIA
-  //
-  // velocidade do som = aproximadamente 343 m/s
-  //
-  // divide por 2 porque:
-  //
-  // sensor -> objeto -> sensor
-  //
   // ===================================================
 
   float distancia =
@@ -697,10 +983,42 @@ float medirDistancia(
 
 
 // =====================================================
-// DISTÂNCIA VÁLIDA PARA ATAQUE
+// DISTÂNCIA VÁLIDA
 // =====================================================
 
-bool distanciaValida(float distancia) {
+bool distanciaValida(
+  float distancia,
+  unsigned long momentoLeitura
+) {
+
+  // Nunca foi lida.
+
+  if (momentoLeitura == 0) {
+
+    return false;
+  }
+
+
+  // Leitura muito antiga.
+
+  if (
+    millis() - momentoLeitura >
+    VALIDADE_LEITURA_MS
+  ) {
+
+    return false;
+  }
+
+
+  // Sem eco.
+
+  if (distancia < 0.0f) {
+
+    return false;
+  }
+
+
+  // Fora da faixa de ataque.
 
   return
     distancia >= DISTANCIA_ATAQUE_MINIMA &&
@@ -715,18 +1033,31 @@ bool distanciaValida(float distancia) {
 void decidirMovimento() {
 
   bool encontrouEsquerda =
-    distanciaValida(distanciaEsq);
+    distanciaValida(
+      distanciaEsq,
+      tempoDistanciaEsq
+    );
+
 
   bool encontrouDireita =
-    distanciaValida(distanciaDir);
+    distanciaValida(
+      distanciaDir,
+      tempoDistanciaDir
+    );
 
 
   // ===================================================
-  // AMBOS DETECTARAM
+  // OS DOIS ENXERGARAM
   // ===================================================
 
-  if (encontrouEsquerda &&
-      encontrouDireita) {
+  if (
+    encontrouEsquerda &&
+    encontrouDireita
+  ) {
+
+    ultimaDirecaoAlvo = ALVO_CENTRO;
+
+    ultimoAlvoVisto = millis();
 
     atacar();
 
@@ -735,10 +1066,14 @@ void decidirMovimento() {
 
 
   // ===================================================
-  // ESQUERDA
+  // SOMENTE ESQUERDA
   // ===================================================
 
   if (encontrouEsquerda) {
+
+    ultimaDirecaoAlvo = ALVO_ESQUERDA;
+
+    ultimoAlvoVisto = millis();
 
     atacarEsquerda();
 
@@ -747,10 +1082,14 @@ void decidirMovimento() {
 
 
   // ===================================================
-  // DIREITA
+  // SOMENTE DIREITA
   // ===================================================
 
   if (encontrouDireita) {
+
+    ultimaDirecaoAlvo = ALVO_DIREITA;
+
+    ultimoAlvoVisto = millis();
 
     atacarDireita();
 
@@ -759,80 +1098,174 @@ void decidirMovimento() {
 
 
   // ===================================================
-  // NENHUM
+  // NENHUM ECO
   // ===================================================
+  //
+  // HC-SR04 pode perder um único eco.
+  //
+  // Por isso mantemos o movimento anterior por apenas
+  // alguns milissegundos.
+  //
+
+  if (
+    ultimaDirecaoAlvo != ALVO_NENHUM &&
+    millis() - ultimoAlvoVisto <= MEMORIA_ALVO_MS
+  ) {
+
+    if (
+      ultimaDirecaoAlvo == ALVO_CENTRO
+    ) {
+
+      atacar();
+
+      return;
+    }
+
+
+    if (
+      ultimaDirecaoAlvo == ALVO_ESQUERDA
+    ) {
+
+      atacarEsquerda();
+
+      return;
+    }
+
+
+    if (
+      ultimaDirecaoAlvo == ALVO_DIREITA
+    ) {
+
+      atacarDireita();
+
+      return;
+    }
+  }
+
+
+  // ===================================================
+  // PERDEU COMPLETAMENTE O ADVERSÁRIO
+  // ===================================================
+
+  ultimaDirecaoAlvo = ALVO_NENHUM;
 
   procurar();
 }
 
 
 // =====================================================
-// MOTORES
-// =====================================================
-
-
-// =====================================================
 // ATAQUE RETO
 // =====================================================
+//
+// Mantive o sentido que está funcionando
+// na sua versão atual.
+//
 
 void atacar() {
 
-  // FRENTE
+  // Motor esquerdo para frente
+
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
+
+
+  // Motor direito para frente
 
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, HIGH);
 
-  analogWrite(ENA, VELOCIDADE_ATAQUE);
-  analogWrite(ENB, VELOCIDADE_ATAQUE);
+
+  analogWrite(
+    ENA,
+    VELOCIDADE_ATAQUE
+  );
+
+  analogWrite(
+    ENB,
+    VELOCIDADE_ATAQUE
+  );
 }
 
 
+// =====================================================
+// RECUAR
+// =====================================================
+
 void recuar() {
 
-  // TRÁS
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
+
 
   digitalWrite(IN3, HIGH);
   digitalWrite(IN4, LOW);
 
-  analogWrite(ENA, VELOCIDADE_RECUO);
-  analogWrite(ENB, VELOCIDADE_RECUO);
+
+  analogWrite(
+    ENA,
+    VELOCIDADE_RECUO
+  );
+
+  analogWrite(
+    ENB,
+    VELOCIDADE_RECUO
+  );
 }
 
+
 // =====================================================
-// GIRAR ESQUERDA
+// GIRAR PARA ESQUERDA
 // =====================================================
 
 void girarEsquerda() {
 
+  // Esquerdo para frente
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
 
+
+  // Direito para trás
   digitalWrite(IN3, HIGH);
   digitalWrite(IN4, LOW);
 
-  analogWrite(ENA, VELOCIDADE_GIRO);
-  analogWrite(ENB, VELOCIDADE_GIRO);
+
+  analogWrite(
+    ENA,
+    VELOCIDADE_GIRO
+  );
+
+  analogWrite(
+    ENB,
+    VELOCIDADE_GIRO
+  );
 }
 
 
 // =====================================================
-// GIRAR DIREITA
+// GIRAR PARA DIREITA
 // =====================================================
 
 void girarDireita() {
 
+  // Esquerdo para trás
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
 
+
+  // Direito para frente
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, HIGH);
 
-  analogWrite(ENA, VELOCIDADE_GIRO);
-  analogWrite(ENB, VELOCIDADE_GIRO);
+
+  analogWrite(
+    ENA,
+    VELOCIDADE_GIRO
+  );
+
+  analogWrite(
+    ENB,
+    VELOCIDADE_GIRO
+  );
 }
 
 
@@ -842,52 +1275,94 @@ void girarDireita() {
 
 void atacarEsquerda() {
 
-  // Ambos para frente
+  // Ambos para frente.
+
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
 
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, HIGH);
 
-  // Esquerdo mais lento
-  // Direito mais rápido
-  analogWrite(ENA, VELOCIDADE_BUSCA);
-  analogWrite(ENB, VELOCIDADE_ATAQUE);
-}
 
+  // Motor esquerdo mais lento.
+  // Motor direito mais rápido.
+  //
+  // Robô curva para esquerda.
 
-void atacarDireita() {
+  analogWrite(
+    ENA,
+    VELOCIDADE_CURVA_ATAQUE
+  );
 
-  // Ambos para frente
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-
-  // Esquerdo mais rápido
-  // Direito mais lento
-  analogWrite(ENA, VELOCIDADE_ATAQUE);
-  analogWrite(ENB, VELOCIDADE_BUSCA);
+  analogWrite(
+    ENB,
+    VELOCIDADE_ATAQUE
+  );
 }
 
 
 // =====================================================
-// PROCURAR ADVERSÁRIO
+// ATAQUE PARA DIREITA
+// =====================================================
+
+void atacarDireita() {
+
+  // Ambos para frente.
+
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+
+
+  // Motor esquerdo mais rápido.
+  // Motor direito mais lento.
+  //
+  // Robô curva para direita.
+
+  analogWrite(
+    ENA,
+    VELOCIDADE_ATAQUE
+  );
+
+  analogWrite(
+    ENB,
+    VELOCIDADE_CURVA_ATAQUE
+  );
+}
+
+
+// =====================================================
+// BUSCAR ADVERSÁRIO
 // =====================================================
 
 void procurar() {
 
+  //
   // Giro no próprio eixo.
+  //
+  // Mais lento do que antes para permitir
+  // que o HC-SR04 consiga encontrar o adversário.
+  //
 
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
 
+
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, HIGH);
 
-  analogWrite(ENA, VELOCIDADE_BUSCA);
-  analogWrite(ENB, VELOCIDADE_BUSCA);
+
+  analogWrite(
+    ENA,
+    VELOCIDADE_BUSCA
+  );
+
+  analogWrite(
+    ENB,
+    VELOCIDADE_BUSCA
+  );
 }
 
 
@@ -900,9 +1375,135 @@ void parar() {
   analogWrite(ENA, 0);
   analogWrite(ENB, 0);
 
+
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
 
+
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, LOW);
+}
+
+
+// =====================================================
+// DEBUG DOS SENSORES
+// =====================================================
+
+void debugSensores() {
+
+  if (!DEBUG_SERIAL) {
+
+    return;
+  }
+
+
+  if (
+    millis() - ultimoDebug < 300
+  ) {
+
+    return;
+  }
+
+
+  ultimoDebug = millis();
+
+
+  int tcrtEsq =
+    analogReadEstavel(IR_BORDA_ESQ);
+
+
+  int tcrtDir =
+    analogReadEstavel(IR_BORDA_DIR);
+
+
+  // ===================================================
+  // TCRT
+  // ===================================================
+
+  Serial.print(F("TCRT E: "));
+  Serial.print(tcrtEsq);
+
+  Serial.print(F(" | TCRT D: "));
+  Serial.print(tcrtDir);
+
+
+  // ===================================================
+  // ULTRASSOM ESQUERDO
+  // ===================================================
+
+  Serial.print(F(" | ULTRA E: "));
+
+
+  if (distanciaEsq < 0.0f) {
+
+    Serial.print(F("SEM ECO"));
+
+  } else {
+
+    Serial.print(
+      distanciaEsq * 100.0f,
+      1
+    );
+
+    Serial.print(F("cm"));
+  }
+
+
+  // ===================================================
+  // ULTRASSOM DIREITO
+  // ===================================================
+
+  Serial.print(F(" | ULTRA D: "));
+
+
+  if (distanciaDir < 0.0f) {
+
+    Serial.print(F("SEM ECO"));
+
+  } else {
+
+    Serial.print(
+      distanciaDir * 100.0f,
+      1
+    );
+
+    Serial.print(F("cm"));
+  }
+
+
+  // ===================================================
+  // ESTADO
+  // ===================================================
+
+  Serial.print(F(" | ESTADO: "));
+
+
+  switch (estadoPartida) {
+
+    case AGUARDANDO:
+
+      Serial.print(F("AGUARDANDO"));
+      break;
+
+
+    case READY:
+
+      Serial.print(F("READY"));
+      break;
+
+
+    case START:
+
+      Serial.print(F("START"));
+      break;
+
+
+    case STOP_PERMANENTE:
+
+      Serial.print(F("STOP"));
+      break;
+  }
+
+
+  Serial.println();
 }
