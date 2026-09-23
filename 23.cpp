@@ -1,4 +1,4 @@
-Claro. Abaixo está a versão completa já simplificada para diagnóstico, com leitura dos TCRT e ultrassônicos no Serial, STOP permanente e sem a dupla leitura imediata do HC-SR04.
+
 #include <IRremote.hpp>
 
 // =====================================================
@@ -777,33 +777,30 @@ void decidirMovimento() {
 
 void atacar() {
 
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-
-  analogWrite(ENA, VELOCIDADE_ATAQUE);
-  analogWrite(ENB, VELOCIDADE_ATAQUE);
-}
-
-
-// =====================================================
-// RECUAR
-// =====================================================
-
-void recuar() {
-
+  // FRENTE
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
 
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, HIGH);
 
+  analogWrite(ENA, VELOCIDADE_ATAQUE);
+  analogWrite(ENB, VELOCIDADE_ATAQUE);
+}
+
+
+void recuar() {
+
+  // TRÁS
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+
   analogWrite(ENA, VELOCIDADE_RECUO);
   analogWrite(ENB, VELOCIDADE_RECUO);
 }
-
 
 // =====================================================
 // GIRAR ESQUERDA
