@@ -842,43 +842,31 @@ void girarDireita() {
 
 void atacarEsquerda() {
 
-  // Os dois motores continuam para frente.
-  //
-  // Motor esquerdo mais lento.
-  // Motor direito mais rápido.
-  //
-  // Resultado:
-  // curva para esquerda.
+  // Ambos para frente
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
 
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
 
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-
+  // Esquerdo mais lento
+  // Direito mais rápido
   analogWrite(ENA, VELOCIDADE_BUSCA);
   analogWrite(ENB, VELOCIDADE_ATAQUE);
 }
 
 
-// =====================================================
-// ATAQUE PARA DIREITA
-// =====================================================
-
 void atacarDireita() {
 
-  // Motor esquerdo mais rápido.
-  // Motor direito mais lento.
-  //
-  // Resultado:
-  // curva para direita.
+  // Ambos para frente
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
 
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
 
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-
+  // Esquerdo mais rápido
+  // Direito mais lento
   analogWrite(ENA, VELOCIDADE_ATAQUE);
   analogWrite(ENB, VELOCIDADE_BUSCA);
 }
